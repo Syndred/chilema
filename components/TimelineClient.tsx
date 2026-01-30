@@ -3,12 +3,19 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Database, Plus, RefreshCw } from "lucide-react";
+import { Database, Download, Plus, RefreshCw, Calendar } from "lucide-react";
 import DailySummary from "@/components/DailySummary";
 import MealCard from "@/components/MealCard";
 import { Button } from "@/components/ui/button";
 import { listMealsDesc } from "@/lib/db/localDB";
 import type { MealRecord } from "@/lib/types";
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+
+type NavigatorWithStandalone = Navigator & { standalone?: boolean };
 
 function toYmd(d: Date) {
   const y = d.getFullYear();
@@ -40,6 +47,9 @@ export default function TimelineClient() {
   const [meals, setMeals] = useState<MealRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+
   const [selectedYmd, setSelectedYmd] = useState(() => urlYmd ?? toYmd(new Date()));
 
   async function load() {
@@ -57,6 +67,37 @@ export default function TimelineClient() {
 
   useEffect(() => {
     void load();
+  }, []);
+
+  useEffect(() => {
+    // Capture install prompt (Chrome/Edge on Android). It may NOT auto-show.
+    const onBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setInstallPrompt(e as BeforeInstallPromptEvent);
+    };
+
+    const onAppInstalled = () => {
+      setIsInstalled(true);
+      setInstallPrompt(null);
+    };
+
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onAppInstalled);
+
+    const checkInstalled = () => {
+      const standalone =
+        window.matchMedia?.("(display-mode: standalone)")?.matches ??
+        (window.navigator as NavigatorWithStandalone).standalone ??
+        false;
+      setIsInstalled(Boolean(standalone));
+    };
+
+    checkInstalled();
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onAppInstalled);
+    };
   }, []);
 
   // Keep internal state in sync when URL changes (e.g. after saving a record).
@@ -98,26 +139,56 @@ export default function TimelineClient() {
                   setSelectedYmd(v);
                   router.replace(`/?date=${encodeURIComponent(v)}`);
                 }}
-                className="h-9 rounded-full border bg-white px-3 text-sm text-zinc-800 shadow-sm outline-none focus:ring-2 focus:ring-[#FF9A8B]/40"
+                className="h-9 w-36 sm:w-auto rounded-full border bg-white px-3 text-sm text-zinc-800 shadow-sm outline-none focus:ring-2 focus:ring-[#FF9A8B]/40"
                 aria-label="选择日期"
               />
               {!isToday ? (
                 <Button
                   variant="outline"
-                  className="h-9 rounded-full"
+                  className="h-9 rounded-full flex items-center gap-2"
                   onClick={() => {
                     const today = toYmd(new Date());
                     setSelectedYmd(today);
                     router.replace(`/?date=${encodeURIComponent(today)}`);
                   }}
+                  aria-label="回到今天"
                 >
-                  回到今天
+                  <Calendar className="h-4 w-4" />
+                  <span className="hidden sm:inline">回到今天</span>
                 </Button>
               ) : null}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 pt-0.5">
+          <div className="flex items-center gap-2 shrink-0 pt-0.5 flex-wrap sm:flex-nowrap">
+            {!isInstalled ? (
+              <Button
+                variant="outline"
+                className="rounded-full flex items-center gap-2 h-9"
+                onClick={async () => {
+                  if (installPrompt) {
+                    await installPrompt.prompt();
+                    // must be awaited to avoid Chrome complaining
+                    await installPrompt.userChoice.catch(() => null);
+                    setInstallPrompt(null);
+                  } else {
+                    window.alert(
+                      [
+                        "如果没有弹出安装窗口：",
+                        "1) 安卓 Chrome：右上角菜单 → “安装应用/添加到主屏幕”",
+                        "                        2) iOS Safari：分享按钮 → “添加到主屏幕”",
+                        "",
+                        "提示：浏览器通常不会每次都自动弹出安装提示。",
+                      ].join("\n"),
+                    );
+                  }
+                }}
+                aria-label="安装到桌面"
+              >
+                <Download className="h-4 w-4" />
+                <span className="hidden sm:inline">安装</span>
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="icon"
@@ -142,11 +213,11 @@ export default function TimelineClient() {
 
             <Button
               asChild
-              className="rounded-full"
+              className="rounded-full flex items-center gap-2 h-9"
             >
               <Link href={`/add?date=${encodeURIComponent(selectedYmd)}`}>
                 <Plus className="h-4 w-4" />
-                记录这一餐
+                <span className="hidden sm:inline">记录这一餐</span>
               </Link>
             </Button>
           </div>
